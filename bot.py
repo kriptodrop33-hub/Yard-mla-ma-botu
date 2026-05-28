@@ -2,6 +2,7 @@
 """
 Airdrop Referans Yardımlaşma Grubu — Telegram Yönetim Botu
 Tüm komutlar yalnızca ADMIN_IDS listesindeki kullanıcılara açıktır.
+v2.0 — Gelişmiş Admin Paneli
 """
 
 import asyncio
@@ -53,6 +54,9 @@ TR   = pytz.timezone(Config.TIMEZONE)
 
 # Flood tracker: {user_id: [timestamp, ...]}
 flood_tracker: dict[int, list[float]] = defaultdict(list)
+
+# Bot başlangıç zamanı (uptime için)
+BOT_START_TIME = datetime.now(pytz.utc)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  YARDIMCILAR
@@ -115,6 +119,19 @@ async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     return None, None
 
+def _uptime_str() -> str:
+    """Bot çalışma süresini okunabilir formatta döner."""
+    delta = datetime.now(pytz.utc) - BOT_START_TIME
+    days    = delta.days
+    hours   = delta.seconds // 3600
+    minutes = (delta.seconds % 3600) // 60
+    if days > 0:
+        return f"{days}g {hours}s {minutes}d"
+    elif hours > 0:
+        return f"{hours}s {minutes}d"
+    else:
+        return f"{minutes}d"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  UYARI ZİNCİRİ (ortak logic: warn → mute → ban)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -159,23 +176,48 @@ async def apply_warn(context: ContextTypes.DEFAULT_TYPE,
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ADMİN PANELİ (inline keyboard)
+#  ADMİN PANELİ — KLAVYELER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _panel_keyboard() -> InlineKeyboardMarkup:
+    """Ana panel — 5 satır, 2 buton."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📊 İstatistikler",  callback_data="p_stats"),
-            InlineKeyboardButton("🏆 Liderlik",        callback_data="p_top"),
+            InlineKeyboardButton("📊 İstatistikler",      callback_data="p_stats"),
+            InlineKeyboardButton("🏆 Liderlik Tablosu",   callback_data="p_top"),
         ],
         [
-            InlineKeyboardButton("⚠️ Son Uyarılar",   callback_data="p_warns"),
-            InlineKeyboardButton("🔇 Susturulanlar",   callback_data="p_muted"),
+            InlineKeyboardButton("⚠️ Son Uyarılar",       callback_data="p_warns"),
+            InlineKeyboardButton("🔇 Susturulanlar",       callback_data="p_muted"),
+        ],
+        [
+            InlineKeyboardButton("🚫 Banlı Kullanıcılar", callback_data="p_banned"),
+            InlineKeyboardButton("👤 Kullanıcı Sorgula",  callback_data="p_user_prompt"),
+        ],
+        [
+            InlineKeyboardButton("📢 Gruba Duyuru",       callback_data="p_announce"),
+            InlineKeyboardButton("🤖 Bot Durumu",          callback_data="p_botstatus"),
+        ],
+        [
+            InlineKeyboardButton("📋 Komut Listesi",      callback_data="p_commands"),
+            InlineKeyboardButton("🔄 Günlük Rapor",        callback_data="p_report"),
         ],
     ])
 
 def _back_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Geri", callback_data="p_back")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Ana Panel", callback_data="p_back")]])
+
+def _back_and_refresh(refresh_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Yenile",    callback_data=refresh_data),
+            InlineKeyboardButton("🔙 Ana Panel", callback_data="p_back"),
+        ]
+    ])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ADMİN PANELİ — METİN ÜRETİCİLERİ
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _fmt_leaderboard(rows) -> str:
     if not rows:
@@ -207,6 +249,99 @@ async def _stats_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"💬 Bugün Mesaj: <b>{td.get('total_messages', 0)}</b>\n"
         f"🔗 Toplam Davet: <b>{s['total_invites']}</b>\n"
         f"⚠️ Toplam Uyarı: <b>{s['total_warns']}</b>"
+    )
+
+async def _botstatus_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    s = await db.get_group_stats()
+    try:
+        member_count = await context.bot.get_chat_member_count(Config.GROUP_ID)
+    except Exception:
+        member_count = "?"
+    try:
+        bot_info = await context.bot.get_me()
+        bot_name = bot_info.first_name
+        bot_username = f"@{bot_info.username}"
+    except Exception:
+        bot_name = "Bot"
+        bot_username = ""
+
+    muted_rows  = await db.get_muted_users()
+    banned_rows = await db.get_banned_users() if hasattr(db, "get_banned_users") else []
+    warn_rows   = await db.get_recent_warnings(5)
+    now         = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
+
+    return (
+        f"🤖 <b>BOT DURUM RAPORU</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"📛 Bot: <b>{bot_name}</b> ({bot_username})\n"
+        f"⏱ Uptime: <b>{_uptime_str()}</b>\n"
+        f"📅 Şu An: <b>{now}</b>\n\n"
+        f"<b>📌 Grup Özeti</b>\n"
+        f"├ 👥 Toplam Üye: <b>{member_count}</b>\n"
+        f"├ 🔇 Susturulan: <b>{len(muted_rows)}</b>\n"
+        f"├ 🚫 Banlı: <b>{len(banned_rows)}</b>\n"
+        f"├ ⚠️ Toplam Uyarı: <b>{s['total_warns']}</b>\n"
+        f"└ 💬 Toplam Mesaj: <b>{s['total_messages']}</b>\n\n"
+        f"<b>⚙️ Konfigürasyon</b>\n"
+        f"├ Max Uyarı: <b>{Config.MAX_WARNS}</b>\n"
+        f"├ Flood Eşiği: <b>{Config.FLOOD_MAX_MESSAGES} mesaj / {Config.FLOOD_TIME_WINDOW}sn</b>\n"
+        f"├ 2. Uyarı Mute: <b>{Config.MUTE_DURATION_ON_2ND_WARN // 3600}s</b>\n"
+        f"└ Flood Mute: <b>{Config.MUTE_DURATION_ON_FLOOD // 60}dk</b>"
+    )
+
+def _commands_text() -> str:
+    return (
+        "📋 <b>ADMİN KOMUT REHBERİ</b>\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+
+        "🚨 <b>MODERASYON</b>\n"
+        "├ <code>/ban [@user|reply] [sebep]</code>\n"
+        "│  └ Kullanıcıyı gruptan banlar\n"
+        "├ <code>/unban [@user|reply]</code>\n"
+        "│  └ Ban kaldırır\n"
+        "├ <code>/kick [@user|reply] [sebep]</code>\n"
+        "│  └ Kullanıcıyı atar (ban değil)\n"
+        "├ <code>/mute [@user|reply] [dk] [sebep]</code>\n"
+        "│  └ Varsayılan: 60 dk susturur\n"
+        "└ <code>/unmute [@user|reply]</code>\n"
+        "   └ Susturmayı kaldırır\n\n"
+
+        "⚠️ <b>UYARI SİSTEMİ</b>\n"
+        "├ <code>/warn [@user|reply] [sebep]</code>\n"
+        "│  └ Uyarı verir (2.→mute, 3.→ban)\n"
+        "├ <code>/unwarn [@user|reply]</code>\n"
+        "│  └ Son uyarıyı siler\n"
+        "├ <code>/resetwarns [@user|reply]</code>\n"
+        "│  └ Tüm uyarıları sıfırlar\n"
+        "└ <code>/warnings [@user|reply]</code>\n"
+        "   └ Uyarı geçmişini gösterir\n\n"
+
+        "📢 <b>DUYURU & İLETİŞİM</b>\n"
+        "├ <code>/duyuru [mesaj]</code>\n"
+        "│  └ Gruba biçimlendirilmiş duyuru\n"
+        "└ <code>/broadcast [mesaj]</code>\n"
+        "   └ Ham metin ile gruba mesaj\n\n"
+
+        "🔍 <b>SORGULAMA</b>\n"
+        "├ <code>/userinfo [@user|reply]</code>\n"
+        "│  └ Kullanıcı detayları & geçmişi\n"
+        "├ <code>/banlist</code>\n"
+        "│  └ Banlı kullanıcı listesi\n"
+        "├ <code>/stats</code>  — Grup istatistikleri\n"
+        "└ <code>/top</code>    — Davet liderlik tablosu\n\n"
+
+        "🛠️ <b>YÖNETİM</b>\n"
+        "├ <code>/temizle [N]</code>\n"
+        "│  └ Son N mesajı siler (maks 100)\n"
+        "├ <code>/purgefrom</code>\n"
+        "│  └ Reply'den itibaren siler\n"
+        "├ <code>/davetlink</code>\n"
+        "│  └ Takipli davet linki üretir\n"
+        "├ <code>/rapor</code>\n"
+        "│  └ Günlük raporu şimdi gönderir\n"
+        "├ <code>/rules</code>  — Grup kuralları\n"
+        "├ <code>/ping</code>   — Bot gecikme testi\n"
+        "└ <code>/panel</code>  — Admin panelini açar"
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -382,10 +517,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("❌ Yalnızca adminler kullanabilir!", show_alert=True)
         return
 
+    # Ana panel'e geri dön
     if data == "p_back":
+        now = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
         try:
             await q.message.edit_text(
-                "🎛️ <b>ADMİN PANELİ</b>\n━━━━━━━━━━━━━━━━━\nAşağıdan işlem seçin:",
+                f"🎛️ <b>ADMİN PANELİ</b>\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"👤 Hoş geldin, <b>{q.from_user.first_name}</b>!\n"
+                f"📅 {now}\n\n"
+                f"Aşağıdan işlem seçin:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_panel_keyboard(),
             )
@@ -393,24 +534,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
+    # İstatistikler
     if data == "p_stats":
         text = await _stats_text(context)
         try:
-            await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_back_keyboard())
-        except Exception:
-            pass
-        return
-
-    if data == "p_top":
-        rows = await db.get_invite_leaderboard(10)
-        try:
             await q.message.edit_text(
-                _fmt_leaderboard(rows), parse_mode=ParseMode.HTML, reply_markup=_back_keyboard()
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_stats"),
             )
         except Exception:
             pass
         return
 
+    # Liderlik tablosu
+    if data == "p_top":
+        rows = await db.get_invite_leaderboard(10)
+        try:
+            await q.message.edit_text(
+                _fmt_leaderboard(rows), parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_top"),
+            )
+        except Exception:
+            pass
+        return
+
+    # Son uyarılar
     if data == "p_warns":
         rows = await db.get_recent_warnings(10)
         if not rows:
@@ -423,11 +571,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"• {mention_id(r['user_id'], name)} — {r['reason']} [{dt}]")
             text = "\n".join(lines)
         try:
-            await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_back_keyboard())
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_warns"),
+            )
         except Exception:
             pass
         return
 
+    # Susturulanlar
     if data == "p_muted":
         rows = await db.get_muted_users()
         if not rows:
@@ -440,25 +592,140 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"• {mention_id(r['user_id'], name)} → {until}")
             text = "\n".join(lines)
         try:
-            await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_back_keyboard())
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_muted"),
+            )
         except Exception:
             pass
         return
 
+    # Banlı kullanıcılar
+    if data == "p_banned":
+        try:
+            rows = await db.get_banned_users()
+        except Exception:
+            rows = []
+        if not rows:
+            text = "🚫 Banlı kullanıcı kaydı yok."
+        else:
+            lines = [f"🚫 <b>BANLI KULLANICILAR</b> ({len(rows)} kişi)\n━━━━━━━━━━━━━━━━━\n"]
+            for r in rows[:20]:  # Maksimum 20 göster
+                name  = r.get("first_name") or "Kullanıcı"
+                uname = f"@{r['username']}" if r.get("username") else ""
+                line  = f"• {mention_id(r['user_id'], name)}"
+                if uname:
+                    line += f" {uname}"
+                lines.append(line)
+            if len(rows) > 20:
+                lines.append(f"\n<i>...ve {len(rows) - 20} kişi daha</i>")
+            text = "\n".join(lines)
+        try:
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_banned"),
+            )
+        except Exception:
+            pass
+        return
+
+    # Kullanıcı sorgula (yönlendirme mesajı)
+    if data == "p_user_prompt":
+        text = (
+            "👤 <b>KULLANICI SORGULA</b>\n"
+            "━━━━━━━━━━━━━━━━━\n\n"
+            "DM'e dönün ve şu komutu kullanın:\n\n"
+            "<code>/userinfo @kullanıcı_adı</code>\n"
+            "veya\n"
+            "<code>/userinfo kullanıcı_id</code>\n\n"
+            "<i>Grupta bir mesajına reply yaparak da /userinfo komutunu kullanabilirsiniz.</i>"
+        )
+        try:
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_keyboard(),
+            )
+        except Exception:
+            pass
+        return
+
+    # Gruba duyuru
+    if data == "p_announce":
+        text = (
+            "📢 <b>GRUBA DUYURU GÖNDER</b>\n"
+            "━━━━━━━━━━━━━━━━━\n\n"
+            "DM'e dönün ve şu komutu kullanın:\n\n"
+            "<code>/duyuru [mesajınız]</code>\n\n"
+            "📌 Duyuru otomatik olarak biçimlendirilir ve\n"
+            "gruba admin imzasıyla gönderilir.\n\n"
+            "<b>Örnek:</b>\n"
+            "<code>/duyuru Yarın 20:00'de yeni airdrop duyurusu yapılacak!</code>"
+        )
+        try:
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_keyboard(),
+            )
+        except Exception:
+            pass
+        return
+
+    # Bot durumu
+    if data == "p_botstatus":
+        text = await _botstatus_text(context)
+        try:
+            await q.message.edit_text(
+                text, parse_mode=ParseMode.HTML,
+                reply_markup=_back_and_refresh("p_botstatus"),
+            )
+        except Exception:
+            pass
+        return
+
+    # Komut listesi
+    if data == "p_commands":
+        try:
+            await q.message.edit_text(
+                _commands_text(), parse_mode=ParseMode.HTML,
+                reply_markup=_back_keyboard(),
+            )
+        except Exception:
+            pass
+        return
+
+    # Günlük raporu şimdi gönder
+    if data == "p_report":
+        await q.answer("⏳ Rapor gönderiliyor...", show_alert=False)
+        try:
+            await send_daily_report(context.application)
+            await q.message.edit_text(
+                "✅ <b>Günlük rapor gruba gönderildi!</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_back_keyboard(),
+            )
+        except Exception as e:
+            await q.message.edit_text(
+                f"❌ Rapor gönderilemedi: {e}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_back_keyboard(),
+            )
+        return
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ADMİN KOMUTLARI  (tamamı admin-only — sessizce reddedilir)
+#  /start — Admin için gelişmiş karşılama
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     uid  = update.effective_user.id
+    user = update.effective_user
 
     if chat.type != "private":
         return  # Grupta /start yok
 
     if not is_admin(uid):
         await update.effective_message.reply_text(
-            "👋 Merhaba!\n\n"
+            "👋 <b>Merhaba!</b>\n\n"
             "Ben <b>Airdrop Referans Yardımlaşma Grubu</b> botuyum.\n"
             "Gruba katılmak için aşağıdaki butona tıklayabilirsin!",
             parse_mode=ParseMode.HTML,
@@ -469,21 +736,86 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Admin: panel aç
-    await update.effective_message.reply_text(
-        "🎛️ <b>ADMİN PANELİ</b>\n━━━━━━━━━━━━━━━━━\nAşağıdan işlem seçin:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=_panel_keyboard(),
+    # ── Admin için gelişmiş karşılama ─────────────────────────────────────
+    now = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
+    s   = await db.get_group_stats()
+    try:
+        member_count = await context.bot.get_chat_member_count(Config.GROUP_ID)
+    except Exception:
+        member_count = s.get("total_users", "?")
+
+    td = s.get("today") or {}
+
+    welcome_text = (
+        f"🎛️ <b>ADMİN PANELİ</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 Hoş geldin, <b>{user.first_name}</b>!\n"
+        f"📅 {now} | ⏱ Uptime: <b>{_uptime_str()}</b>\n\n"
+
+        f"📌 <b>Hızlı Durum</b>\n"
+        f"├ 👥 Toplam Üye: <b>{member_count}</b>\n"
+        f"├ 📈 Bugün Katılan: <b>+{td.get('new_members', 0)}</b>\n"
+        f"├ 💬 Bugün Mesaj: <b>{td.get('total_messages', 0)}</b>\n"
+        f"└ ⚠️ Toplam Uyarı: <b>{s['total_warns']}</b>\n\n"
+
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>⚡ Hızlı Komutlar:</b>\n"
+        f"<code>/panel</code> — Panel aç\n"
+        f"<code>/stats</code> — İstatistikler\n"
+        f"<code>/top</code> — Liderlik tablosu\n"
+        f"<code>/duyuru [metin]</code> — Gruba duyuru\n"
+        f"<code>/userinfo @user</code> — Kullanıcı sorgula\n"
+        f"<code>/temizle N</code> — Son N mesajı sil\n"
+        f"<code>/rapor</code> — Günlük raporu tetikle\n"
+        f"━━━━━━━━━━━━━━━━━"
     )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎛️ Admin Paneli",     callback_data="p_back"),
+            InlineKeyboardButton("📊 İstatistikler",    callback_data="p_stats"),
+        ],
+        [
+            InlineKeyboardButton("🏆 Liderlik",          callback_data="p_top"),
+            InlineKeyboardButton("📋 Komut Listesi",     callback_data="p_commands"),
+        ],
+        [
+            InlineKeyboardButton("🤖 Bot Durumu",        callback_data="p_botstatus"),
+            InlineKeyboardButton("🔄 Günlük Rapor",      callback_data="p_report"),
+        ],
+        [
+            InlineKeyboardButton("📢 Duyuru Kanalı",     url=Config.CHANNEL_LINK),
+            InlineKeyboardButton("👥 Ana Grup",           url=Config.MAIN_GROUP_LINK),
+        ],
+    ])
+
+    await update.effective_message.reply_text(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  /panel
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def cmd_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
+    now = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
     await update.effective_message.reply_text(
-        "🎛️ <b>ADMİN PANELİ</b>\n━━━━━━━━━━━━━━━━━\nAşağıdan işlem seçin:",
+        f"🎛️ <b>ADMİN PANELİ</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 Hoş geldin, <b>{update.effective_user.first_name}</b>!\n"
+        f"📅 {now}\n\n"
+        f"Aşağıdan işlem seçin:",
         parse_mode=ParseMode.HTML,
         reply_markup=_panel_keyboard(),
     )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MODERASYON KOMUTLARI
+# ═══════════════════════════════════════════════════════════════════════════════
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
@@ -546,7 +878,6 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("❌ Kullanıcı belirtin!")
         return
 
-    # Süre ayırma: /mute @user 60 sebep   → 60 dakika
     duration = 60
     extra_args = context.args if not update.effective_message.reply_to_message else context.args
     if extra_args:
@@ -587,6 +918,10 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except TelegramError as e:
         await update.effective_message.reply_text(f"❌ Unmute başarısız: {e}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UYARI KOMUTLARI
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     target, reason = await get_target(update, context)
@@ -594,7 +929,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("❌ Kullanıcı belirtin!")
         return
     if is_admin(target.id):
-        await update.effective_message.reply_text("❌ Admin uyarılamazı!")
+        await update.effective_message.reply_text("❌ Admin uyarılamaz!")
         return
     await db.upsert_user(target.id, target.username, target.first_name)
     result_text = await apply_warn(
@@ -648,6 +983,263 @@ async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "\n".join(lines)
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  YENİ KOMUTLAR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanıcının tüm bilgilerini & geçmişini gösterir."""
+    if not is_admin(update.effective_user.id): return
+    target, _ = await get_target(update, context)
+    if not target:
+        await update.effective_message.reply_text(
+            "❌ Kullanıcı belirtin!\n"
+            "Kullanım: <code>/userinfo @kullanıcı</code> veya mesaja reply yapın.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # DB'den bilgi çek
+    row   = await db.get_user_by_id(target.id) if hasattr(db, "get_user_by_id") else None
+    warns = await db.get_warnings(target.id)
+    warn_count = len(warns) if warns else 0
+
+    # Grup üyelik durumu
+    try:
+        cm     = await context.bot.get_chat_member(Config.GROUP_ID, target.id)
+        status_map = {
+            "member":       "✅ Üye",
+            "administrator":"👑 Admin",
+            "creator":      "👑 Kurucu",
+            "restricted":   "🔇 Kısıtlı",
+            "left":         "🚪 Ayrılmış",
+            "kicked":       "🚫 Banlı",
+        }
+        status = status_map.get(cm.status, cm.status)
+    except TelegramError:
+        status = "❓ Bilinmiyor"
+
+    # Mesaj sayısı & davet sayısı
+    msg_count = 0
+    inv_count = 0
+    if row:
+        msg_count = row.get("message_count", 0)
+        inv_count = row.get("invite_count", 0)
+
+    uname   = f"@{target.username}" if target.username else "—"
+    name    = target.full_name or target.first_name or "?"
+    uid_str = str(target.id)
+
+    lines = [
+        f"👤 <b>KULLANICI BİLGİSİ</b>",
+        f"━━━━━━━━━━━━━━━━━",
+        f"📛 Ad: <b>{name}</b>",
+        f"🔗 Kullanıcı Adı: <b>{uname}</b>",
+        f"🆔 ID: <code>{uid_str}</code>",
+        f"📊 Grup Durumu: <b>{status}</b>",
+        f"",
+        f"<b>📈 İstatistikler</b>",
+        f"├ 💬 Toplam Mesaj: <b>{msg_count}</b>",
+        f"├ 🔗 Davet Sayısı: <b>{inv_count}</b>",
+        f"└ ⚠️ Uyarı Sayısı: <b>{warn_count}/{Config.MAX_WARNS}</b>",
+    ]
+
+    if warns:
+        lines.append("")
+        lines.append("<b>⚠️ Uyarı Geçmişi:</b>")
+        for w in warns[-5:]:  # Son 5 uyarı
+            dt = w["created_at"].strftime("%d.%m.%Y %H:%M")
+            lines.append(f"  • {w['reason']} <i>[{dt}]</i>")
+
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML
+    )
+
+async def cmd_banlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Banlı kullanıcı listesini gösterir."""
+    if not is_admin(update.effective_user.id): return
+    try:
+        rows = await db.get_banned_users()
+    except Exception:
+        rows = []
+
+    if not rows:
+        await update.effective_message.reply_text("🚫 Banlı kullanıcı kaydı yok.")
+        return
+
+    lines = [f"🚫 <b>BANLI KULLANICILAR</b> ({len(rows)} kişi)\n━━━━━━━━━━━━━━━━━\n"]
+    for r in rows[:30]:
+        name  = r.get("first_name") or "Kullanıcı"
+        uname = f"@{r['username']}" if r.get("username") else ""
+        line  = f"• {mention_id(r['user_id'], name)}"
+        if uname:
+            line += f" ({uname})"
+        lines.append(line)
+    if len(rows) > 30:
+        lines.append(f"\n<i>...ve {len(rows) - 30} kişi daha</i>")
+
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML
+    )
+
+async def cmd_duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gruba admin imzalı biçimlendirilmiş duyuru gönderir."""
+    if not is_admin(update.effective_user.id): return
+    if not context.args:
+        await update.effective_message.reply_text(
+            "❌ Duyuru metni boş!\n"
+            "Kullanım: <code>/duyuru [mesaj metni]</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    admin     = update.effective_user
+    mesaj     = " ".join(context.args)
+    now_str   = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
+    admin_str = f"@{admin.username}" if admin.username else admin.first_name
+
+    duyuru_text = (
+        f"📢 <b>DUYURU</b>\n"
+        f"━━━━━━━━━━━━━━━━━\n\n"
+        f"{mesaj}\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"👤 <i>{admin_str}</i> tarafından paylaşıldı\n"
+        f"📅 {now_str}\n\n"
+        f"📢 {Config.CHANNEL_USERNAME} | 👥 {Config.MAIN_GROUP_USERNAME}"
+    )
+
+    try:
+        await context.bot.send_message(
+            Config.GROUP_ID, duyuru_text, parse_mode=ParseMode.HTML
+        )
+        await update.effective_message.reply_text("✅ Duyuru gruba gönderildi!")
+    except TelegramError as e:
+        await update.effective_message.reply_text(f"❌ Duyuru gönderilemedi: {e}")
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gruba ham metin ile mesaj gönderir (biçimlendirme olmadan)."""
+    if not is_admin(update.effective_user.id): return
+    if not context.args:
+        await update.effective_message.reply_text(
+            "❌ Mesaj boş!\nKullanım: <code>/broadcast [mesaj]</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    mesaj = " ".join(context.args)
+    try:
+        await context.bot.send_message(Config.GROUP_ID, mesaj)
+        await update.effective_message.reply_text("✅ Mesaj gruba gönderildi!")
+    except TelegramError as e:
+        await update.effective_message.reply_text(f"❌ Mesaj gönderilemedi: {e}")
+
+async def cmd_temizle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Son N mesajı gruptan siler (maksimum 100)."""
+    if not is_admin(update.effective_user.id): return
+
+    # Argüman kontrolü
+    n = 10  # varsayılan
+    if context.args:
+        try:
+            n = int(context.args[0])
+            if n < 1:
+                n = 1
+            elif n > 100:
+                n = 100
+        except ValueError:
+            await update.effective_message.reply_text(
+                "❌ Geçersiz sayı!\nKullanım: <code>/temizle [1-100]</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+    msg     = update.effective_message
+    chat_id = msg.chat.id
+    msg_id  = msg.message_id
+    deleted = 0
+    failed  = 0
+
+    # Bilgi mesajı
+    info = await msg.reply_text(f"🗑️ Son <b>{n}</b> mesaj siliniyor...", parse_mode=ParseMode.HTML)
+
+    # msg_id'den geriye doğru sil (komutu ve bilgi mesajını dahil et)
+    ids_to_delete = list(range(msg_id - n, msg_id + 1)) + [info.message_id]
+
+    for mid in ids_to_delete:
+        if mid <= 0:
+            continue
+        try:
+            await context.bot.delete_message(chat_id, mid)
+            deleted += 1
+            await asyncio.sleep(0.05)  # rate limit için kısa bekleme
+        except TelegramError:
+            failed += 1
+
+    # Sonuç raporu (30 sn sonra silinir)
+    result = await context.bot.send_message(
+        chat_id,
+        f"✅ <b>{deleted}</b> mesaj silindi. ({failed} silinemedi)",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(result, 10))
+
+async def cmd_purgefrom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply yapılan mesajdan itibaren tüm mesajları siler."""
+    if not is_admin(update.effective_user.id): return
+    msg = update.effective_message
+
+    if not msg.reply_to_message:
+        await msg.reply_text("❌ Silmeye başlanacak mesajı reply yapın!")
+        return
+
+    start_id = msg.reply_to_message.message_id
+    end_id   = msg.message_id
+    chat_id  = msg.chat.id
+    count    = end_id - start_id + 1
+
+    if count > 200:
+        await msg.reply_text("❌ Tek seferde en fazla 200 mesaj silinebilir!")
+        return
+
+    info = await msg.reply_text(
+        f"🗑️ <b>{count}</b> mesaj siliniyor...", parse_mode=ParseMode.HTML
+    )
+    deleted = 0
+
+    for mid in range(start_id, end_id + 1):
+        try:
+            await context.bot.delete_message(chat_id, mid)
+            deleted += 1
+            await asyncio.sleep(0.05)
+        except TelegramError:
+            pass
+
+    try:
+        await info.delete()
+    except Exception:
+        pass
+
+    result = await context.bot.send_message(
+        chat_id,
+        f"✅ <b>{deleted}</b> mesaj silindi.",
+        parse_mode=ParseMode.HTML,
+    )
+    asyncio.create_task(_delete_later(result, 10))
+
+async def cmd_rapor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Günlük raporu manuel olarak şimdi gönderir."""
+    if not is_admin(update.effective_user.id): return
+    notif = await update.effective_message.reply_text("⏳ Rapor hazırlanıyor...")
+    try:
+        await send_daily_report(context.application)
+        await notif.edit_text("✅ Günlük rapor gruba gönderildi!")
+    except Exception as e:
+        await notif.edit_text(f"❌ Rapor gönderilemedi: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MEVCUT KOMUTLAR (değişmedi)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return
     text = await _stats_text(context)
@@ -674,7 +1266,6 @@ async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def cmd_davetlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Adminin gruba özel davet linki oluşturmasını sağlar."""
     if not is_admin(update.effective_user.id): return
     user = update.effective_user
     try:
@@ -697,7 +1288,11 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t0  = time.time()
     msg = await update.effective_message.reply_text("🏓 Pong...")
     ms  = int((time.time() - t0) * 1000)
-    await msg.edit_text(f"🏓 <b>Pong!</b> <code>{ms}ms</code>", parse_mode=ParseMode.HTML)
+    await msg.edit_text(
+        f"🏓 <b>Pong!</b> <code>{ms}ms</code>\n"
+        f"⏱ Uptime: <b>{_uptime_str()}</b>",
+        parse_mode=ParseMode.HTML,
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  GÜNLÜK İSTATİSTİK RAPORU (APScheduler)
@@ -718,7 +1313,7 @@ async def send_daily_report(app: Application):
 
     lines = [
         f"📊 <b>GÜNLÜK İSTATİSTİK RAPORU</b>",
-        f"📅 {now_str} — 20:00\n",
+        f"📅 {now_str} — {Config.DAILY_REPORT_HOUR:02d}:{Config.DAILY_REPORT_MINUTE:02d}\n",
         f"👥 Toplam Üye: <b>{count}</b>",
         f"📈 Bugün Katılan: <b>+{td.get('new_members', 0)}</b>",
         f"📉 Bugün Ayrılan: <b>-{td.get('left_members', 0)}</b>",
@@ -804,6 +1399,14 @@ def main():
         ("rules",       cmd_rules),
         ("davetlink",   cmd_davetlink),
         ("ping",        cmd_ping),
+        # ── YENİ KOMUTLAR ──────────────────────────────────────────────────
+        ("userinfo",    cmd_userinfo),
+        ("banlist",     cmd_banlist),
+        ("duyuru",      cmd_duyuru),
+        ("broadcast",   cmd_broadcast),
+        ("temizle",     cmd_temizle),
+        ("purgefrom",   cmd_purgefrom),
+        ("rapor",       cmd_rapor),
     ]
     for cmd, func in commands:
         app.add_handler(CommandHandler(cmd, func))
@@ -816,7 +1419,7 @@ def main():
         MessageHandler(filters.ALL & ~filters.COMMAND, handle_message)
     )
 
-    logger.info("🚀 Referans Bot başlatıldı!")
+    logger.info("🚀 Referans Bot v2.0 başlatıldı!")
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
