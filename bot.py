@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Airdrop Referans Yardımlaşma Grubu — Telegram Yönetim Botu
-v3.0 — Yavaş Mod + Komut Menüsü + Tam Ayar Paneli
+v3.1 — Güvenlik (Captcha) + Scam Filtresi + Görsel Yenileme
 """
 
 import asyncio
@@ -101,6 +101,421 @@ class SettingsManager:
             "desc": "Flood tespitinde verilen susturma süresi.",
         },
         "NOTIF_DELETE_S": {
+            "type": "int", "default": 30, "min": 5, "max": 120, "step": 5,
+            "label": "Bildirim Silme Süresi", "unit": " sn", "cat": "mod",
+            "desc": "Moderasyon bildirimlerinin kaç saniye sonra silineceği.",
+        },
+        # ── Güvenlik ──────────────────────────────────────────────
+        "CAPTCHA_ENABLED": {
+            "type": "bool", "default": True,
+            "label": "Captcha Doğrulama", "cat": "guv",
+            "desc": "Yeni üyeden 'İnsanım' onayı ister, bot/scam hesapları eler.",
+        },
+        "CAPTCHA_TIMEOUT_S": {
+            "type": "int", "default": 60, "min": 20, "max": 300, "step": 10,
+            "label": "Captcha Süresi", "unit": " sn", "cat": "guv",
+            "desc": "Bu süre içinde doğrulamayan üye otomatik atılır.",
+        },
+        "SCAM_FILTER": {
+            "type": "bool", "default": True,
+            "label": "Scam Filtresi", "cat": "guv",
+            "desc": "Cüzdan/seed/garanti kazanç gibi scam ifadelerini yakalar.",
+        },
+        # ── Filtreler ─────────────────────────────────────────────
+        "AI_FILTER": {
+            "type": "bool", "default": True,
+            "label": "AI Küfür Filtresi", "cat": "fil",
+            "desc": "Groq AI ile otomatik küfür/hakaret tespiti.",
+        },
+        "FLOOD_PROTECT": {
+            "type": "bool", "default": True,
+            "label": "Flood Koruması", "cat": "fil",
+            "desc": "Hızlı mesaj gönderenleri otomatik sustur.",
+        },
+        "LINK_FILTER": {
+            "type": "bool", "default": False,
+            "label": "Link Filtresi", "cat": "fil",
+            "desc": "Kapalı: Üyeler serbestçe link paylaşabilir (referans grubu için önerilen).",
+        },
+        "BOT_FILTER": {
+            "type": "bool", "default": True,
+            "label": "Bot Hesap Muafiyeti", "cat": "fil",
+            "desc": "Bot hesaplarını moderasyondan muaf tut.",
+        },
+        # ── Günlük Rapor ──────────────────────────────────────────
+        "REPORT_ENABLED": {
+            "type": "bool", "default": True,
+            "label": "Günlük Rapor", "cat": "rep",
+            "desc": "Her gün otomatik istatistik raporu gönder.",
+        },
+        "REPORT_HOUR": {
+            "type": "int", "default": 20, "min": 0, "max": 23, "step": 1,
+            "label": "Rapor Saati", "unit": "", "cat": "rep",
+            "desc": "Günlük raporun gönderileceği saat (0–23).",
+        },
+        "REPORT_MINUTE": {
+            "type": "int", "default": 0, "min": 0, "max": 55, "step": 5,
+            "label": "Rapor Dakikası", "unit": "", "cat": "rep",
+            "desc": "Günlük raporun gönderileceği dakika (0, 5 … 55).",
+        },
+        "REPORT_LEADERBOARD": {
+            "type": "bool", "default": True,
+            "label": "Davet Liderleri", "cat": "rep",
+            "desc": "Günlük raporda davet liderlik tablosunu göster.",
+        },
+        "REPORT_ACTIVE": {
+            "type": "bool", "default": True,
+            "label": "En Aktif Üyeler", "cat": "rep",
+            "desc": "Günlük raporda en çok mesaj atanları göster.",
+        },
+        # ── Karşılama ─────────────────────────────────────────────
+        "WELCOME_ENABLED": {
+            "type": "bool", "default": True,
+            "label": "Karşılama Mesajı", "cat": "wel",
+            "desc": "Yeni üye katıldığında karşılama mesajı gönder.",
+        },
+        "WELCOME_RULES": {
+            "type": "bool", "default": True,
+            "label": "Karşılamada Kurallar", "cat": "wel",
+            "desc": "Karşılama mesajında grup kurallarını göster.",
+        },
+        "WELCOME_BTNS": {
+            "type": "bool", "default": True,
+            "label": "Karşılamada Butonlar", "cat": "wel",
+            "desc": "Karşılama mesajına kanal/grup butonları ekle.",
+        },
+        "WELCOME_MEMBER_COUNT": {
+            "type": "bool", "default": True,
+            "label": "Üye Sayısını Göster", "cat": "wel",
+            "desc": "Karşılamada toplam üye sayısını belirt.",
+        },
+    }
+
+    CATS = {
+        "slow": {"icon": "🐢", "label": "Yavaş Mod"},
+        "mod":  {"icon": "🚨", "label": "Moderasyon"},
+        "guv":  {"icon": "🛡️", "label": "Güvenlik"},
+        "fil":  {"icon": "🤖", "label": "Filtreler"},
+        "rep":  {"icon": "📊", "label": "Günlük Rapor"},
+        "wel":  {"icon": "👋", "label": "Karşılama"},
+    }
+
+    def __init__(self):
+        self._data: dict = {}
+        self._load()
+
+    def _load(self):
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    self._data = json.load(f)
+                logger.info(f"Ayarlar yüklendi ({len(self._data)} özel değer)")
+            except Exception as e:
+                logger.error(f"Ayar yükleme hatası: {e}")
+
+    def _save(self):
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Ayar kayıt hatası: {e}")
+
+    def get(self, key: str):
+        return self._data.get(key, self.DEFS[key]["default"])
+
+    def set(self, key: str, value) -> None:
+        self._data[key] = value
+        self._save()
+
+    def toggle(self, key: str) -> bool:
+        new = not self.get(key)
+        self.set(key, new)
+        return new
+
+    def increment(self, key: str, step: int) -> int:
+        defn = self.DEFS[key]
+        new  = max(defn["min"], min(defn["max"], self.get(key) + step))
+        self.set(key, new)
+        return new
+
+    def reset_cat(self, cat: str):
+        for k, d in self.DEFS.items():
+            if d.get("cat") == cat:
+                self._data.pop(k, None)
+        self._save()
+
+
+settings   = SettingsManager()
+db         = Database()
+groq       = GroqFilter()
+TR         = pytz.timezone(Config.TIMEZONE)
+BOT_START  = datetime.now(pytz.utc)
+_scheduler: AsyncIOScheduler | None = None
+
+# Son mesaj zamanı (yavaş mod): {user_id: timestamp}
+slow_tracker: dict[int, float] = {}
+# Flood takibi: {user_id: [timestamp, ...]}
+flood_tracker: dict[int, list[float]] = defaultdict(list)
+# Captcha bekleyen üyeler: {user_id: captcha_message_id}
+captcha_pending: dict[int, int] = {}
+
+# Crypto/airdrop gruplarına özgü scam ifadeleri (küçük harfle eşleşir)
+SCAM_KEYWORDS = (
+    "seed phrase", "private key", "özel anahtar", "gizli anahtar",
+    "secret recovery", "kurtarma ifadesi", "12 kelime", "24 kelime",
+    "cüzdan bağla", "cüzdanını bağla", "cüzdan onayla", "connect wallet",
+    "metamask doğrula", "metamask onay", "trust wallet doğrula",
+    "airdrop claim et", "claim et hemen", "ücretsiz btc", "ücretsiz eth",
+    "ücretsiz usdt", "garanti kazanç", "garantili kazanç", "katla paranı",
+    "paranı 2x", "2x para", "vip sinyal", "pump grubu", "kesin kazandırır",
+    "yatırım fırsatı kaçırma", "özelden yaz kazandırayım", "dm at kazandır",
+    "para kazandırıyorum", "günlük kazanç garantili",
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  YARDIMCILAR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Görsel yardımcılar ────────────────────────────────────────────────────────
+DIV = "━━━━━━━━━━━━━━━━━━━━"
+
+def _hdr(icon: str, title: str) -> str:
+    """Standart başlık + ayraç bloğu."""
+    return f"{icon} <b>{title}</b>\n{DIV}"
+
+def _footer() -> str:
+    return f"📢 {Config.CHANNEL_USERNAME}  ·  👥 {Config.MAIN_GROUP_USERNAME}"
+
+def _bar(cur: int, total: int, fill: str = "▰", empty: str = "▱") -> str:
+    """Görsel ilerleme çubuğu: ▰▰▱  (uyarı seviyesi gibi)."""
+    total = max(int(total), 1)
+    n = max(0, min(int(cur), total))
+    return fill * n + empty * (total - n)
+
+def _onoff(flag: bool) -> str:
+    return "🟢 Açık" if flag else "🔴 Kapalı"
+
+
+def is_admin(uid: int) -> bool:
+    return uid in Config.ADMIN_IDS
+
+def mention(user) -> str:
+    return f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+
+def mid(uid: int, name: str) -> str:
+    return f'<a href="tg://user?id={uid}">{name}</a>'
+
+def _mute_perms():
+    return ChatPermissions(
+        can_send_messages=False, can_send_audios=False,
+        can_send_documents=False, can_send_photos=False,
+        can_send_videos=False, can_send_video_notes=False,
+        can_send_voice_notes=False, can_send_polls=False,
+        can_send_other_messages=False, can_add_web_page_previews=False,
+    )
+
+def _unmute_perms():
+    return ChatPermissions(
+        can_send_messages=True, can_send_audios=True,
+        can_send_documents=True, can_send_photos=True,
+        can_send_videos=True, can_send_video_notes=True,
+        can_send_voice_notes=True, can_send_polls=True,
+        can_send_other_messages=True, can_add_web_page_previews=True,
+    )
+
+async def _del(msg, delay: int = None):
+    await asyncio.sleep(delay if delay is not None else settings.get("NOTIF_DELETE_S"))
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+async def get_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg.reply_to_message:
+        return msg.reply_to_message.from_user, (" ".join(context.args) if context.args else None)
+    if context.args:
+        arg    = context.args[0].lstrip("@")
+        reason = " ".join(context.args[1:]) or None
+        try:
+            uid = int(arg)
+            cm  = await context.bot.get_chat_member(Config.GROUP_ID, uid)
+            return cm.user, reason
+        except ValueError:
+            row = await db.get_user_by_username(arg)
+            if row:
+                cm = await context.bot.get_chat_member(Config.GROUP_ID, row["user_id"])
+                return cm.user, reason
+        except TelegramError:
+            pass
+    return None, None
+
+def _uptime() -> str:
+    d = datetime.now(pytz.utc) - BOT_START
+    h, m = divmod(d.seconds, 3600)
+    m //= 60
+    if d.days:
+        return f"{d.days}g {h}s {m}d"
+    return f"{h}s {m}d" if h else f"{m}d"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UYARI ZİNCİRİ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def apply_warn(ctx, user_id, fname, admin_id, reason) -> str:
+    count     = await db.add_warn(user_id, admin_id, reason)
+    m_        = mid(user_id, fname)
+    max_warns = settings.get("MAX_WARNS")
+    bar       = _bar(count, max_warns)
+
+    if count >= max_warns:
+        try:
+            await ctx.bot.ban_chat_member(Config.GROUP_ID, user_id)
+            await db.set_banned(user_id, True)
+        except TelegramError as e:
+            logger.error(f"Otomatik ban: {e}")
+        return (
+            f"🔨 {m_} <b>son uyarısına ulaştı → BANLANDI!</b>\n"
+            f"📊 {bar}  ({count}/{max_warns})\n"
+            f"📌 Sebep: {reason}"
+        )
+
+    if count == 2:
+        mh    = settings.get("MUTE_2ND_WARN_H")
+        until = datetime.now(tz=pytz.utc) + timedelta(hours=mh)
+        try:
+            await ctx.bot.restrict_chat_member(Config.GROUP_ID, user_id, _mute_perms(), until_date=until)
+            await db.set_mute(user_id, until)
+        except TelegramError as e:
+            logger.error(f"Otomatik mute: {e}")
+        return (
+            f"⚠️ {m_} <b>uyarıldı! ({count}/{max_warns})</b>\n"
+            f"📊 {bar}\n"
+            f"📌 Sebep: {reason}\n🔇 {mh} saat susturuldu!\n"
+            f"❗ Bir sonraki uyarıda banlanacak!"
+        )
+
+    return (
+        f"⚠️ {m_} <b>uyarıldı! ({count}/{max_warns})</b>\n"
+        f"📊 {bar}\n"
+        f"📌 Sebep: {reason}\n❗ {max_warns - count} uyarı hakkı kaldı!"
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AYARLAR PANELİ — KLAVYE & METİN ÜRETİCİLERİ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _bool_btn(key: str) -> InlineKeyboardButton:
+    val   = settings.get(key)
+    label = settings.DEFS[key]["label"]
+    return InlineKeyboardButton(f"{'✅' if val else '❌'} {label}", callback_data=f"st:{key}")
+
+def _int_row(key: str) -> list:
+    d    = settings.DEFS[key]
+    val  = settings.get(key)
+    unit = d.get("unit", "")
+    disp = f"{val:02d}" if key in ("REPORT_HOUR", "REPORT_MINUTE") else f"{val}{unit}"
+    return [
+        InlineKeyboardButton("◀",               callback_data=f"si:{key}:-{d['step']}"),
+        InlineKeyboardButton(f"{d['label']}: {disp}", callback_data="noop"),
+        InlineKeyboardButton("▶",               callback_data=f"si:{key}:{d['step']}"),
+    ]
+
+def _nav(reset_cat: str = None) -> list:
+    row = []
+    if reset_cat:
+        row.append(InlineKeyboardButton("🔄 Sıfırla", callback_data=f"s_reset:{reset_cat}"))
+    row += [
+        InlineKeyboardButton("🔙 Ayarlar", callback_data="set_menu"),
+        InlineKeyboardButton("🏠 Panel",   callback_data="p_back"),
+    ]
+    return row
+
+# ── Ana Ayarlar Menüsü ────────────────────────────────────────────────────────
+
+def _set_main_kbd() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🐢 Yavaş Mod",   callback_data="set_cat:slow"),
+            InlineKeyboardButton("🚨 Moderasyon",   callback_data="set_cat:mod"),
+        ],
+        [
+            InlineKeyboardButton("🛡️ Güvenlik",     callback_data="set_cat:guv"),
+            InlineKeyboardButton("🤖 Filtreler",    callback_data="set_cat:fil"),
+        ],
+        [
+            InlineKeyboardButton("📊 Günlük Rapor", callback_data="set_cat:rep"),
+            InlineKeyboardButton("👋 Karşılama",    callback_data="set_cat:wel"),
+        ],
+        [
+            InlineKeyboardButton("📋 Değişen Ayarlar", callback_data="set_summary"),
+        ],
+        [InlineKeyboardButton("🔙 Ana Panel", callback_data="p_back")],
+    ])
+
+def _set_main_txt() -> str:
+    now = datetime.now(TR).strftime("%d.%m.%Y %H:%M")
+    h, m_= settings.get("REPORT_HOUR"), settings.get("REPORT_MINUTE")
+    return (
+        f"{_hdr('⚙️','AYARLAR')}\n"
+        f"📅 {now}\n\n"
+        f"<b>Hızlı Durum</b>\n"
+        f"🐢 Yavaş Mod: <b>{_onoff(settings.get('SLOW_MODE_ENABLED'))}</b> ({settings.get('SLOW_MODE_MIN')} dk)\n"
+        f"🛡️ Captcha: <b>{_onoff(settings.get('CAPTCHA_ENABLED'))}</b>  🪤 Scam: <b>{_onoff(settings.get('SCAM_FILTER'))}</b>\n"
+        f"🤖 AI Filtre: <b>{_onoff(settings.get('AI_FILTER'))}</b>  🌊 Flood: <b>{_onoff(settings.get('FLOOD_PROTECT'))}</b>\n"
+        f"👋 Karşılama: <b>{_onoff(settings.get('WELCOME_ENABLED'))}</b>  📊 Rapor: <b>{_onoff(settings.get('REPORT_ENABLED'))}</b> {h:02d}:{m_:02d}\n\n"
+        f"Düzenlemek istediğin kategoriyi seç:"
+    )
+
+# ── Yavaş Mod ────────────────────────────────────────────────────────────────
+
+def _slow_kbd() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [_bool_btn("SLOW_MODE_ENABLED")],
+        _int_row("SLOW_MODE_MIN"),
+        _nav("slow"),
+    ])
+
+def _slow_txt() -> str:
+    enabled = settings.get("SLOW_MODE_ENABLED")
+    mins    = settings.get("SLOW_MODE_MIN")
+    return (
+        f"{_hdr('🐢','YAVAŞ MOD AYARLARI')}\n\n"
+        f"Durum: <b>{_onoff(enabled)}</b>\n"
+        f"Süre: <b>{mins} dakika</b>\n\n"
+        f"<i>Yavaş mod açıkken üyeler yalnızca {mins} dakikada bir\n"
+        f"mesaj gönderebilir. Kuralı ihlal eden mesajlar otomatik\n"
+        f"silinerek kullanıcıya bildirim gönderilir.\n\n"
+        f"Adminler ve bot hesapları bu kuraldan muaftır.</i>\n\n"
+        f"{DIV}\n"
+        f"◀ ▶ ile süreyi dakika dakika ayarlayın."
+    )
+
+# ── Moderasyon ───────────────────────────────────────────────────────────────
+
+def _mod_kbd() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        _int_row("MAX_WARNS"),
+        _int_row("MUTE_2ND_WARN_H"),
+        _int_row("FLOOD_MAX_MSG"),
+        _int_row("FLOOD_WINDOW_S"),
+        _int_row("FLOOD_MUTE_MIN"),
+        _int_row("NOTIF_DELETE_S"),
+        _nav("mod"),
+    ])
+
+def _mod_txt() -> str:
+    s = settings
+    return (
+        f"{_hdr('🚨','MODERASYON AYARLARI')}\n\n"
+        f"⚠️ Max Uyarı: <b>{s.get('MAX_WARNS')} uyarı</b>\n"
+        f"   <i>Bu sayıdan sonra otomatik ban</i>\n\n"
+        f"🔇 2. Uyarı Mute: <b>{s.get('MUTE_2ND_WARN_H')} saat</b>\n\n"
+        f"🌊 Flood Eşiği: <b>{s.get('FLOOD_MAX_MSG')} mesaj / {s.get('FLOOD_WINDOW_S')} sn</b>\n\n"
+        f"⏳ Flood Mute: <b>{s.get('FLOOD_MUTE_MIN')} dakika</b>\n\n"
+        f"🗑 Bildirim Silme: <b>{s.get('NOTIF_DELETE_S')} saniye</b>\n\n"
+        f"{DIV}\n"
+              "NOTIF_DELETE_S": {
             "type": "int", "default": 30, "min": 5, "max": 120, "step": 5,
             "label": "Bildirim Silme Süresi", "unit": " sn", "cat": "mod",
             "desc": "Moderasyon bildirimlerinin kaç saniye sonra silineceği.",
